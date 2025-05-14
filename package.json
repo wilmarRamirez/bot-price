@@ -1,5 +1,12 @@
 {
   "type": "module",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/app.js"
+  },
+  "imports": {
+    "#*": "./src/*.js",
+    "#test/*": "./test/*.js"
+  },
   "dependencies": {
     "axios": "^1.8.1",
     "puppeteer": "^24.3.0"
