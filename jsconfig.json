@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "resolveJsonModule": true,
+    "paths": {
+      "#*": [
+        "./src/*"
+      ],
+      "#test/*": [
+        "./test/*"
+      ]
+    }
+  }
+}
