@@ -12,7 +12,7 @@ const urlWeb = process.env.HACEB_URL;
  * URL base de la API de Zoho para enviar los datos extraídos.
  * @type {string}
  */
-const api = process.env.ZOHO_URL;
+// const api = process.env.ZOHO_URL;
 
 async function setupBrowser() {
   const browser = await puppeteer.launch({
