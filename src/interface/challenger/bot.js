@@ -1,18 +1,9 @@
 import axios from "axios";
 import puppeteer from "puppeteer";
-import readline from "readline";
+import { utils } from "#utils/index";
 
 const urlWeb = process.env.CHALLENGER_URL;
 const api = process.env.ZOHO_URL;
-
-/**
- * Actualiza el progreso mostrado en la consola.
- * @param {number} progreso - Porcentaje de progreso a mostrar.
- */
-function actualizarProgreso(progreso) {
-  readline.cursorTo(process.stdout, 0);
-  process.stdout.write(`Cargando: ${progreso.toFixed(2)}%\r`);
-}
 
 /**
  * Extrae productos de la web de Challenger y los envía a la API de Zoho.
@@ -21,186 +12,254 @@ function actualizarProgreso(progreso) {
  * @function botChallenger
  * @returns {Promise<void>} No retorna nada, pero imprime el progreso y resultados en consola.
  */
-export const botChallenger = async () => {
-  const browser = await puppeteer.launch({
-    headless: false, // Para ver el navegador en acción
-    args: [`--window-size=1880,980`], // Establece el tamaño de la ventana
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function getCategoryList(page) {
+  await page.goto(urlWeb, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector(".menu-section", { timeout: 5000 });
+  return await page.evaluate(() =>
+    Array.from(document.querySelectorAll(".menu-item-has-children")).map((el) =>
+      el.innerText.trim()
+    )
+  );
+}
+
+async function getNumPages(page) {
+  return await page.evaluate(
+    () =>
+      Array.from(
+        document.querySelectorAll(".pager.bottom .pages .page-number")
+      ).length
+  );
+}
+
+async function getProductsUrl(page) {
+  return await page.evaluate(() => {
+    return Array.from(
+      document.querySelectorAll(".ag-card-grid ul li a.ag-card__content")
+    ).map((item) => item.href);
   });
+}
 
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1880, height: 980 }); // Ajusta el viewport
-  console.log("Extraer datos");
+async function getProductData(page) {
+  return await page.evaluate(() => {
+    function getCategoriaChallenger() {
+      const el = document.querySelector(
+        ".ag-product-details__cod.codigo-produto .skuReference"
+      );
+      return el ? el.innerText.trim() : "0";
+    }
+    function getReferenciaChallenger1() {
+      const el = document.querySelector(
+        ".ag-product-details__title.product-name .productName"
+      );
+      return el ? el.innerText.trim() : "0";
+    }
+    function getPrecioChallenger() {
+      const el = document.querySelector(".skuBestPrice");
+      if (!el) return "0";
+      return el.innerHTML.trim().replace("$", "").replace(/\./g, "");
+    }
+    return {
+      Categoria_challenger: getCategoriaChallenger(),
+      Referencia_challenger1: getReferenciaChallenger1(),
+      Precio_Challenger: getPrecioChallenger(),
+    };
+  });
+}
 
-  await page.goto(urlWeb, {
+async function hasNextPage(page) {
+  return await page.$(".pager.bottom li.next");
+}
+
+async function getNextPageInfo(page) {
+  return await page.evaluate(() => {
+    const currentPage = document.querySelector(".page-number.pgCurrent");
+    const nextButton = currentPage?.nextElementSibling;
+    return {
+      nextPageExists: !!nextButton,
+      nextPageNumber: nextButton
+        ? parseInt(nextButton.innerText.trim())
+        : null,
+    };
+  });
+}
+
+async function goToNextPage(page, currentPageNumber) {
+  await page.click(".page-number.pgCurrent + li");
+  await page.waitForFunction(
+    (prevPage) => {
+      const newPage = document.querySelector(".page-number.pgCurrent");
+      return newPage && parseInt(newPage.innerText.trim()) !== prevPage;
+    },
+    {},
+    currentPageNumber
+  );
+  await page.waitForSelector(".ag-card-grid.n12colunas ul li", {
+    timeout: 50000,
+  });
+}
+
+async function processProductUrls(page, productsUrl, allProducts) {
+  for (const url of productsUrl) {
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await delay(500);
+    const element = await getProductData(page);
+    if (
+      element.Categoria_challenger !== "0" &&
+      element.Precio_Challenger !== "0" &&
+      element.Referencia_challenger1 !== "0"
+    ) {
+      allProducts.push(element);
+    }
+    await page.goBack();
+  }
+}
+
+function handleNoNextPage(currentPageNumber) {
+  return { done: true, nextPageNumber: currentPageNumber };
+}
+
+function handleNoNextPageExists(currentPageNumber) {
+  console.log("✅ No hay más páginas. Finalizando...");
+  return { done: true, nextPageNumber: currentPageNumber };
+}
+
+function handleNullNextPageNumber(currentPageNumber) {
+  return { done: true, nextPageNumber: currentPageNumber };
+}
+
+function handlePaginationError(error, currentPageNumber) {
+  console.error(
+    "❌ Error al hacer clic en 'Siguiente' o cargar la página:",
+    error.message
+  );
+  return { done: true, nextPageNumber: currentPageNumber };
+}
+
+function shouldStopOnNoNextPage(nextPageButton, currentPageNumber) {
+  if (!nextPageButton) {
+    return { stop: true, result: handleNoNextPage(currentPageNumber) };
+  }
+  return { stop: false };
+}
+
+function shouldStopOnNoNextPageExists(nextPageExists, currentPageNumber) {
+  if (!nextPageExists) {
+    return { stop: true, result: handleNoNextPageExists(currentPageNumber) };
+  }
+  return { stop: false };
+}
+
+function shouldStopOnNullNextPageNumber(nextPageNumber, currentPageNumber) {
+  if (nextPageNumber === null) {
+    return { stop: true, result: handleNullNextPageNumber(currentPageNumber) };
+  }
+  return { stop: false };
+}
+
+function checkNextPageButton(nextPageButton, currentPageNumber) {
+  const stopOnNoNextPage = shouldStopOnNoNextPage(nextPageButton, currentPageNumber);
+  if (stopOnNoNextPage.stop) {
+    return { shouldReturn: true, result: stopOnNoNextPage.result };
+  }
+  return { shouldReturn: false };
+}
+
+function checkNextPageExists(nextPageExists, currentPageNumber) {
+  const stopOnNoNextPageExists = shouldStopOnNoNextPageExists(nextPageExists, currentPageNumber);
+  if (stopOnNoNextPageExists.stop) {
+    return { shouldReturn: true, result: stopOnNoNextPageExists.result };
+  }
+  return { shouldReturn: false };
+}
+
+function checkNullNextPageNumber(nextPageNumber, currentPageNumber) {
+  const stopOnNullNextPageNumber = shouldStopOnNullNextPageNumber(nextPageNumber, currentPageNumber);
+  if (stopOnNullNextPageNumber.stop) {
+    return { shouldReturn: true, result: stopOnNullNextPageNumber.result };
+  }
+  return { shouldReturn: false };
+}
+
+async function handlePagination(page, currentPageNumber) {
+  const nextPageButton = await hasNextPage(page);
+  const checkButton = checkNextPageButton(nextPageButton, currentPageNumber);
+  if (checkButton.shouldReturn) {
+    return checkButton.result;
+  }
+  try {
+    return await handlePaginationStep(page, currentPageNumber);
+  } catch (error) {
+    return handlePaginationError(error, currentPageNumber);
+  }
+}
+
+async function handlePaginationStep(page, currentPageNumber) {
+  const { nextPageExists, nextPageNumber } = await getNextPageInfo(page);
+  const checkExists = checkNextPageExists(nextPageExists, currentPageNumber);
+  if (checkExists.shouldReturn) {
+    return checkExists.result;
+  }
+  return await handlePaginationAdvance(page, currentPageNumber, nextPageNumber);
+}
+
+async function handlePaginationAdvance(page, currentPageNumber, nextPageNumber) {
+  console.log(`➡️ Avanzando a la página ${nextPageNumber}...`);
+  const checkNull = checkNullNextPageNumber(nextPageNumber, currentPageNumber);
+  if (checkNull.shouldReturn) {
+    return checkNull.result;
+  }
+  await goToNextPage(page, currentPageNumber);
+  return { done: false, nextPageNumber };
+}
+
+async function navigateToCategory(page, category) {
+  await page.goto(`${urlWeb}/${category}`, {
     waitUntil: "domcontentloaded",
   });
-  await page.waitForSelector(".menu-section", { timeout: 5000 });
+  await page.waitForSelector(".vitrine", { timeout: 10000 });
+}
 
-  /**
-   * Obtiene la lista de categorías del menú principal.
-   * @type {string[]}
-   */
-  const listCategory = await page.evaluate(() => {
-    return Array.from(document.querySelectorAll(".menu-item-has-children")).map(
-      (el) => el.innerText.trim()
-    );
-  });
+async function logCategoryInfo(page, category) {
+  const next = await getNumPages(page);
+  console.log(`Páginas a rastrear de la categoría ${category} :`, next);
+  console.log(`Extraer datos de la categoría ${category}`);
+}
 
-  /**
-   * Almacena todos los productos extraídos de todas las categorías.
-   * @type {Array<{Categoria_challenger: string, Referencia_challenger1: string, Precio_Challenger: string}>}
-   */
+async function extractProductsFromCategory(page, category) {
   let allProducts = [];
+  console.log("Categoría seleccionada:", category);
 
-  for (const category of listCategory) {
-    let pageNumber = 1;
-    console.log("Categoría seleccionada:", category);
+  await navigateToCategory(page, category);
+  await logCategoryInfo(page, category);
 
-    await page.goto(`${urlWeb}/${category}`, {
-      waitUntil: "domcontentloaded",
-    });
-    await page.waitForSelector(".vitrine", { timeout: 10000 });
+  let currentPageNumber = 1;
 
-    /**
-     * Número de páginas a rastrear en la categoría actual.
-     * @type {number}
-     */
-    const next = await page.evaluate(
-      () =>
-        Array.from(
-          document.querySelectorAll(".pager.bottom .pages .page-number")
-        ).length
-    );
-    console.log(`Páginas a rastrear de la categoría ${category} :`, next);
-    console.log(`Extraer datos de la categoría ${category}`);
-    let currentPageNumber = 1; // Iniciar con la primera página
-    // while (pageNumber <= next) {
-    while (true) {
-      await page.evaluate(
-        () => new Promise((resolve) => setTimeout(resolve, 500))
-      );
+  allProducts = await extractAllPagesProducts(page, allProducts, currentPageNumber);
 
-      /**
-       * URLs de los productos en la página actual.
-       * @type {string[]}
-       */
-      const productsUrl = await page.evaluate(() => {
-        return Array.from(
-          document.querySelectorAll(".ag-card-grid ul li a.ag-card__content")
-        ).map((item) => item.href); // Captura todas las URLs de los productos
-      });
+  return allProducts;
+}
 
-      for (const url of productsUrl) {
-        await page.goto(url, { waitUntil: "domcontentloaded" }); // Ir a la página del producto
-        await page.evaluate(
-          () => new Promise((resolve) => setTimeout(resolve, 500))
-        );
-        /**
-         * Elemento con los datos del producto extraído de la página.
-         * @type {{Categoria_challenger: string, Referencia_challenger1: string, Precio_Challenger: string}}
-         */
-        const element = await page.evaluate(() => {
-          return {
-            Categoria_challenger:
-              document
-                .querySelector(
-                  ".ag-product-details__cod.codigo-produto .skuReference"
-                )
-                ?.innerText.trim() || "0",
-            Referencia_challenger1:
-              document
-                .querySelector(
-                  ".ag-product-details__title.product-name .productName"
-                )
-                ?.innerText.trim() || "0",
-            Precio_Challenger: (
-              document.querySelector(".skuBestPrice")?.innerHTML.trim() || "0"
-            )
-              .replace("$", "")
-              .replace(/\./g, ""),
-          };
-        });
-        if (
-          element.Categoria_challenger !== "0" &&
-          element.Precio_Challenger !== "0" &&
-          element.Referencia_challenger1 !== "0"
-        ) {
-          allProducts = allProducts.concat(element);
-        }
-        await page.goBack(); // Regresar a la página de la lista
-      }
+async function extractAllPagesProducts(page, allProducts, currentPageNumber) {
+  while (true) {
+    await delay(500);
+    const productsUrl = await getProductsUrl(page);
+    await processProductUrls(page, productsUrl, allProducts);
 
-      // 🔹 Buscar el botón "Siguiente" en cada iteración
-      const nextPageButton = await page.$(".pager.bottom li.next");
-
-      if (!nextPageButton) {
-        break;
-      }
-
-      try {
-        /**
-         * Información sobre la existencia de la siguiente página y su número.
-         * @type {{nextPageExists: boolean, nextPageNumber: number|null}}
-         */
-        const { nextPageExists, nextPageNumber } = await page.evaluate(() => {
-          const currentPage = document.querySelector(".page-number.pgCurrent");
-          const nextButton = currentPage?.nextElementSibling; // Siguiente página
-
-          return {
-            nextPageExists: !!nextButton, // ¿Existe la siguiente página?
-            nextPageNumber: nextButton
-              ? parseInt(nextButton.innerText.trim())
-              : null,
-          };
-        });
-
-        // Si no hay más páginas, salir del bucle
-        if (!nextPageExists) {
-          console.log("✅ No hay más páginas. Finalizando...");
-          break;
-        }
-
-        console.log(`➡️ Avanzando a la página ${nextPageNumber}...`);
-        if (nextPageNumber === null) break;
-
-        // Hacer clic en la siguiente página
-        await page.click(".page-number.pgCurrent + li");
-
-        // Esperar que el cambio de página se refleje asegurando que la clase `pgCurrent` cambie
-        await page.waitForFunction(
-          (prevPage) => {
-            const newPage = document.querySelector(".page-number.pgCurrent");
-            return newPage && parseInt(newPage.innerText.trim()) !== prevPage;
-          },
-          {}, // Opciones
-          currentPageNumber // Pasar el número de la página actual antes del cambio
-        );
-
-        // Actualizar el número de página actual
-        currentPageNumber = nextPageNumber;
-
-        // Esperar que los productos carguen antes de continuar
-        await page.waitForSelector(".ag-card-grid.n12colunas ul li", {
-          timeout: 50000,
-        });
-      } catch (error) {
-        console.error(
-          "❌ Error al hacer clic en 'Siguiente' o cargar la página:",
-          error.message
-        );
-        break; // Terminar si hay un error
-      }
-    }
+    const { done, nextPageNumber } = await handlePagination(page, currentPageNumber);
+    if (done) break;
+    currentPageNumber = nextPageNumber;
   }
+  return allProducts;
+}
 
-  await browser.close();
+async function sendProductsToApi(products) {
   let data = [];
-  console.log("\n✅ Proceso completado.");
-  console.log(`Total de productos extraídos: ${allProducts.length}`);
   let cont = 0;
-  for (const product of allProducts) {
+  for (const product of products) {
     if (product.Precio_Challenger !== "0") {
-      actualizarProgreso((100 / allProducts.length) * (cont + 1));
+      utils.actualizarProgreso((100 / products.length) * (cont + 1));
       data.push(product);
       await axios.request({
         url: `${api}/Precios_Challenger`,
@@ -210,5 +269,40 @@ export const botChallenger = async () => {
       cont++;
     }
   }
+  return data;
+}
+
+async function extractAllProducts(page, listCategory) {
+  let allProducts = [];
+  for (const category of listCategory) {
+    const products = await extractProductsFromCategory(page, category);
+    allProducts = allProducts.concat(products);
+  }
+  return allProducts;
+}
+
+async function prepareBrowserAndPage() {
+  const browser = await puppeteer.launch({
+    headless: false,
+    args: [`--window-size=1880,980`],
+  });
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1880, height: 980 });
+  return { browser, page };
+}
+
+async function runBotChallenger() {
+  const { browser, page } = await prepareBrowserAndPage();
+  console.log("Extraer datos");
+
+  const listCategory = await getCategoryList(page);
+  const allProducts = await extractAllProducts(page, listCategory);
+
+  await browser.close();
+  console.log("\n✅ Proceso completado.");
+  console.log(`Total de productos extraídos: ${allProducts.length}`);
+  await sendProductsToApi(allProducts);
   console.log("Finalizando ejecución...");
-};
+}
+
+export const botChallenger = runBotChallenger;
