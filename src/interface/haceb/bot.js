@@ -17,11 +17,7 @@ const urlWeb = process.env.HACEB_URL;
 async function setupBrowser() {
   const browser = await puppeteer.launch({
     headless: false,
-    args: [
-      `--window-size=1950,980`,
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-    ],
+    args: [`--window-size=950,980`, "--no-sandbox", "--disable-setuid-sandbox"],
   });
   const page = await browser.newPage();
   await page.setViewport({ width: 1950, height: 980 });
@@ -58,7 +54,6 @@ async function extractCategories(page) {
       document.querySelectorAll(".hacebco-menu-drawer-0-x-menuItemIconText")
     ).map((el) => ({
       text: el.innerText.trim(),
-      href: el.href,
     }));
   });
   categories.pop();
@@ -78,10 +73,20 @@ async function extractCategories(page) {
   return categories;
 }
 
+async function extractProducts(page, categories) {
+  for (const category of categories) {
+    console.log(`Navegando a la categoría: ${category.text}...`);
+    const url = `${urlWeb}/${encodeURIComponent(category.text)}`;
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
+  }
+}
+
 export const botHaceb = async () => {
   const { browser, page } = await setupBrowser();
   await openMenu(page);
   const categories = await extractCategories(page);
   console.log("Categorías desde el menú lateral:", categories);
+  await extractProducts(page, categories);
+
   await browser.close();
 };
