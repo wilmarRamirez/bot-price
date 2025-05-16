@@ -1,6 +1,6 @@
 import axios from "axios";
-import puppeteer from "puppeteer";
 import { utils } from "#utils/index";
+import { setupBrowser } from "#config/setupBrowser.config";
 
 const urlWeb = process.env.CHALLENGER_URL;
 const api = process.env.ZOHO_URL;
@@ -15,7 +15,6 @@ const api = process.env.ZOHO_URL;
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function getCategoryList(page) {
-  await page.goto(urlWeb, { waitUntil: "domcontentloaded" });
   await page.waitForSelector(".menu-section", { timeout: 5000 });
   return await page.evaluate(() =>
     Array.from(document.querySelectorAll(".menu-item-has-children")).map((el) =>
@@ -281,18 +280,8 @@ async function extractAllProducts(page, listCategory) {
   return allProducts;
 }
 
-async function prepareBrowserAndPage() {
-  const browser = await puppeteer.launch({
-    headless: false,
-    args: [`--window-size=1880,980`],
-  });
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1880, height: 980 });
-  return { browser, page };
-}
-
 async function runBotChallenger() {
-  const { browser, page } = await prepareBrowserAndPage();
+  const { browser, page } = await setupBrowser(urlWeb, false);
   console.log("Extraer datos");
 
   const listCategory = await getCategoryList(page);
