@@ -1,6 +1,7 @@
 import axios from "axios";
 import puppeteer from "puppeteer";
 import { utils } from "#utils/index";
+import { setupBrowser } from "#config/setupBrowser.config";
 
 
 /**
@@ -15,21 +16,7 @@ const urlWeb = process.env.CHALLENGER_URL;
  */
 const api = process.env.ZOHO_URL;
 
-async function launchBrowser() {
-  return puppeteer.launch({
-    headless: "new",
-    args: [`--window-size=1880,980`, "--no-sandbox", "--disable-setuid-sandbox"],
-  });
-}
-
-async function setupPage(browser) {
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1880, height: 980 });
-  return page;
-}
-
-async function getCategories(page, urlWeb) {
-  await page.goto(urlWeb, { waitUntil: "domcontentloaded" });
+async function getCategories(page) {
   await page.waitForSelector(".menu-section", { timeout: 5000 });
   return page.evaluate(() => {
     return Array.from(
@@ -209,8 +196,7 @@ async function processExtraction(page, urlWeb) {
 }
 
 export const botChallenger = async () => {
-  const browser = await launchBrowser();
-  const page = await setupPage(browser);
+  const {browser, page} = await setupBrowser(urlWeb, true);
   console.log("Extraer datos");
   const allProducts = await processExtraction(page, urlWeb, api);
   await browser.close();
